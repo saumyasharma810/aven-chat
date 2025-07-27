@@ -38,6 +38,27 @@ export default function Home() {
   const [isRecording, setIsRecording] = useState(false);
   const [transcript, setTranscript] = useState("");
   const [recognition, setRecognition] = useState<any>(null);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [isListening, setIsListening] = useState(false);
+  const recognitionRef = useRef<any>(null);
+
+  // Track speech synthesis speaking state
+  useEffect(() => {
+    const handleStart = () => setIsSpeaking(true);
+    const handleEnd = () => setIsSpeaking(false);
+    window.speechSynthesis.addEventListener('start', handleStart);
+    window.speechSynthesis.addEventListener('end', handleEnd);
+    window.speechSynthesis.addEventListener('cancel', handleEnd);
+    return () => {
+      window.speechSynthesis.removeEventListener('start', handleStart);
+      window.speechSynthesis.removeEventListener('end', handleEnd);
+      window.speechSynthesis.removeEventListener('cancel', handleEnd);
+    };
+  }, []);
+
+  useEffect(() => {
+    console.log('[DEBUG] isSpeaking:', isSpeaking);
+  }, [isSpeaking]);
 
   // Initialize speech recognition
   useEffect(() => {
@@ -47,25 +68,34 @@ export default function Home() {
       recognition.continuous = false;
       recognition.interimResults = false;
       recognition.lang = 'en-US';
-      
+
+      recognition.onstart = () => {
+        setIsRecording(true);
+        setIsListening(true);
+        // Stop bot speech if user starts talking
+        if (window.speechSynthesis.speaking) {
+          window.speechSynthesis.cancel();
+        }
+      };
+      recognition.onend = () => {
+        setIsRecording(false);
+        setIsListening(false);
+      };
       recognition.onresult = (event: any) => {
         const transcript = event.results[0][0].transcript;
         setTranscript(transcript);
         setIsRecording(false);
+        setIsListening(false);
         if (transcript) {
           handleVoiceInput(transcript);
         }
       };
-      
       recognition.onerror = (event: any) => {
         console.error('Speech recognition error:', event.error);
         setIsRecording(false);
+        setIsListening(false);
       };
-      
-      recognition.onend = () => {
-        setIsRecording(false);
-      };
-      
+      recognitionRef.current = recognition;
       setRecognition(recognition);
     }
   }, []);
@@ -118,10 +148,8 @@ export default function Home() {
   // Handle voice input
   const handleVoiceInput = async (voiceText: string) => {
     if (!voiceText.trim() || loading) return;
-    const userMsg = { sender: "user", text: voiceText };
-    setMessages((msgs) => [...msgs, userMsg]);
+    setTranscript(voiceText);
     setLoading(true);
-    scrollToBottom();
     try {
       const res = await fetch("http://0.0.0.0:8000/chat", {
         method: "POST",
@@ -129,24 +157,35 @@ export default function Home() {
         body: JSON.stringify({ query: voiceText }),
       });
       const data = await res.json();
-      console.log("Backend response:", data);
-      setMessages((msgs) => [
-        ...msgs,
-        { sender: "bot", text: data.response },
-        ...(data.sources && data.sources.length > 0
-          ? [{ sender: "bot", text: `Sources: ${data.sources.join(", ")}` }]
-          : []),
-      ]);
+      // Use browser TTS to speak the response
+      if (data.response) {
+        const utterance = new window.SpeechSynthesisUtterance(data.response);
+        utterance.onstart = () => setIsSpeaking(true);
+        utterance.onend = () => {
+          setIsSpeaking(false);
+          // After bot finishes speaking, start listening again (conversational loop)
+          if (recognitionRef.current && !isListening) {
+            recognitionRef.current.start();
+          }
+        };
+        utterance.onerror = () => setIsSpeaking(false);
+        utterance.onpause = () => setIsSpeaking(false);
+        utterance.onresume = () => setIsSpeaking(true);
+        window.speechSynthesis.speak(utterance);
+      }
     } catch (err) {
-      setMessages((msgs) => [...msgs, { sender: "bot", text: "Sorry, there was an error." }]);
+      console.error("TTS error or backend error:", err);
     } finally {
       setLoading(false);
-      scrollToBottom();
     }
   };
 
   // Reset chat when switching tabs
   const handleTab = (key: string) => {
+    // Always stop any ongoing speech synthesis when switching tabs
+    if (window.speechSynthesis.speaking) {
+      window.speechSynthesis.cancel();
+    }
     setSelected(key);
     if (key === "chat") {
       setMessages([{ sender: "bot", text: "Hello! How can I help you today?" }]);
@@ -273,13 +312,19 @@ export default function Home() {
                           : "bg-blue-600 hover:bg-blue-700 text-white shadow-lg hover:shadow-xl"
                       }`}
                       onClick={() => {
+                        // Always stop any ongoing speech synthesis when mic is clicked
+                        if (window.speechSynthesis.speaking) {
+                          window.speechSynthesis.cancel();
+                        }
                         if (isRecording) {
                           setIsRecording(false);
                           recognition?.stop();
                         } else {
                           setIsRecording(true);
                           setTranscript("");
-                          recognition?.start();
+                          if (recognition && !isListening) {
+                            recognition.start();
+                          }
                         }
                       }}
                     >
@@ -297,40 +342,16 @@ export default function Home() {
                     )}
                   </div>
                 </div>
-
-                {/* Chat Messages for Voice */}
-                <div className="bg-gray-50 dark:bg-gray-700 rounded-xl p-4 max-h-64 overflow-y-auto">
-                  <div className="space-y-3">
-                    {messages.map((msg, idx) => (
-                      <div
-                        key={idx}
-                        className={`flex ${msg.sender === "user" ? "justify-end" : "justify-start"}`}
-                      >
-                        <div
-                          className={`max-w-[80%] px-3 py-2 rounded-2xl text-sm ${
-                            msg.sender === "user"
-                              ? "bg-blue-600 text-white rounded-br-md"
-                              : "bg-white dark:bg-gray-600 text-gray-800 dark:text-gray-100 rounded-bl-md"
-                          }`}
-                        >
-                          {msg.text}
-                        </div>
-                      </div>
-                    ))}
-                    {loading && (
-                      <div className="flex justify-start">
-                        <div className="bg-white dark:bg-gray-600 text-gray-800 dark:text-gray-100 rounded-2xl rounded-bl-md px-3 py-2">
-                          <div className="flex space-x-1">
-                            <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce"></div>
-                            <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
-                            <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
               </div>
+              {isSpeaking && (
+                <button
+                  className="fixed bottom-8 left-1/2 transform -translate-x-1/2 z-50 px-8 py-4 bg-red-600 hover:bg-red-700 text-white text-lg font-bold rounded-full shadow-2xl animate-pulse"
+                  onClick={() => window.speechSynthesis.cancel()}
+                  type="button"
+                >
+                  Stop Speaking
+                </button>
+              )}
             </div>
           )}
         </div>
