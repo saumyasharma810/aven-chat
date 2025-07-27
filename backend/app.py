@@ -7,8 +7,6 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from rag.chatbot import get_response  
-from backend.vapi_integerate import vapi_service  # <-- import your VapiService
-
 
 app = FastAPI()
 
@@ -44,7 +42,3 @@ async def chat(request: Request):
 
     return {"response": response}
 
-@app.get("/vapi/assistant-id")
-async def get_vapi_assistant_id():
-    assistant_id = await vapi_service.get_or_create_assistant()
-    return {"assistant_id": assistant_id}
